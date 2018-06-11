@@ -6,6 +6,8 @@ import io.lettuce.core.ScriptOutputType;
 import io.lettuce.core.api.StatefulRedisConnection;
 import io.lettuce.core.api.async.RedisAsyncCommands;
 
+import java.util.Date;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.atomic.AtomicLong;
 
@@ -19,26 +21,39 @@ public class LimitingDemo {
     private static StatefulRedisConnection<String, String> connection = client.connect();
     private static RedisAsyncCommands async = connection.async();
 
-    // 获取令牌脚本
+    // 获取令牌脚本（1秒内最多请求3次）
     private static String luaScript =
             "local key = KEYS[1] " +
-            "local limit = 3 " + // 1秒内最多请求3次
-            "local current = tonumber(redis.call('get', key) or '0') " +
-            "if current + 1 > limit then " +
+            "local limit = 3 " +
+            "local times = tonumber(redis.call('get', key) or '0') + 1 " +
+            "if times > limit then " +
+            "    return 1 " +
+            "elseif times == 1 then " +
+            "    redis.call('set', key, times, 'PX', 1000) " +
             "    return 0 " +
             "else " +
             "    redis.call('INCRBY', key, '1') " +
-            "    redis.call('expire', key, '1') " + // 1秒后重新计数
-            "    return 1 " +
+            "    return 0 " +
             "end";
 
     public static void main(String[] args) {
+        int threadCount = 5;
+        CountDownLatch countdown = new CountDownLatch(threadCount);
         String userId = "u001";
-        for (int i = 0; i < 10; i++) {
-            service(userId);
+        for (int i = 0; i < threadCount; i++) {
+            new Thread(() -> {
+                service(userId);
+                countdown.countDown();
+            }).start();
         }
-        connection.close();
-        client.shutdown();
+        try {
+            countdown.await();
+        } catch (InterruptedException e) {
+            e.printStackTrace();
+        } finally {
+            connection.close();
+            client.shutdown();
+        }
     }
 
     private static void service(String userId) {
@@ -53,9 +68,16 @@ public class LimitingDemo {
      */
     private static boolean acquire(String userId) {
         boolean result = false;
-        RedisFuture future = async.eval(luaScript, ScriptOutputType.INTEGER, userId);
         try {
-            result = ((long) future.get()) == 1;
+            int retryCount = 0;
+            while(true) {
+                RedisFuture future = async.eval(luaScript, ScriptOutputType.INTEGER, userId);
+                result = (long) future.get() == 0;
+                if(result || ++retryCount >= 3) {
+                    break;
+                }
+                Thread.sleep(400);
+            }
         } catch (Exception e) {
             e.printStackTrace();
         }
@@ -67,5 +89,6 @@ public class LimitingDemo {
 service...
 service...
 service...
+service...
+有一个请求被拦截。
  */
-
