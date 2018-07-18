@@ -116,12 +116,14 @@ public class DistributedLockDemo {
     private static Thread createDaemonThread(String threadId, RedisStringCommands sync) {
         Thread daemonTread = new Thread(() -> {
             try {
-                while (!Thread.interrupted()) {
+                while (!Thread.currentThread().isInterrupted()) {
                     Thread.sleep(800);
                     sync.set(lockKey, threadId, delayArgs);
                     System.out.println(threadId + ".....daemon");
                 }
-            } catch (InterruptedException | RedisCommandInterruptedException e) {
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            } catch (RedisCommandInterruptedException e) {
 //                e.printStackTrace();
             }
         });
